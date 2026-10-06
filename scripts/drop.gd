@@ -50,7 +50,8 @@ func _on_body_entered(body_in: Node) -> void:
 	_play_consume_burst()
 
 func _play_consume_burst() -> void:
-	monitoring = false
+	set_deferred("monitoring", false)
+	set_deferred("monitorable", false)
 	var t := create_tween()
 	t.set_parallel(true)
 	t.tween_property(body_root, "scale", Vector3(2.4, 2.4, 2.4), 0.18)

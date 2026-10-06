@@ -33,6 +33,10 @@ var pierces_remaining: int = 0
 var wobble_phase: float = randf() * TAU
 var hit_targets: Array[Object] = []
 var base_visual_scale: float = 1.0
+var shooter: Node = null
+var headshot_bonus: float = 0.0
+signal target_hit(hit_type: String, target: Object)
+
 var ribbon_mesh := ImmediateMesh.new()
 var trail_points: Array[Vector3] = []
 var camera: Camera3D
@@ -122,10 +126,28 @@ func _damage_target(target: Object, hit_position: Vector3) -> void:
 	var zone: String = "torso"
 	if target.has_method("get_zone_for_point"):
 		zone = target.get_zone_for_point(hit_position)
+	var prev_health: int = -1
+	if "health" in target:
+		prev_health = target.health
+	var is_crawling: bool = false
+	if "crawl_mode" in target:
+		is_crawling = target.crawl_mode
 	if target.has_method("take_hit"):
-		target.take_hit(zone, damage, direction, 0.0, projectile_color, hit_effect, charge_level)
+		target.take_hit(zone, damage, direction, 0.0, projectile_color, hit_effect, charge_level, headshot_bonus)
 	elif target.has_method("take_damage"):
 		target.take_damage(damage, direction, projectile_color, hit_effect, charge_level)
+
+	var hit_type: String = "body"
+	if ("health" in target and target.health <= 0) or ("dying" in target and target.dying):
+		hit_type = "kill"
+	elif zone == "head":
+		hit_type = "head"
+	elif zone in ["leg_l", "leg_r"] or is_crawling:
+		hit_type = "leg"
+
+	target_hit.emit(hit_type, target)
+	if shooter != null and is_instance_valid(shooter) and shooter.has_method("notify_hit_confirmed"):
+		shooter.notify_hit_confirmed(hit_type)
 
 func _update_visuals(delta: float) -> void:
 	var distance_scale := 1.0

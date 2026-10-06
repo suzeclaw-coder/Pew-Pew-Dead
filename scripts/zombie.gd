@@ -18,6 +18,9 @@ const BLOOD_SPRAY_SCRIPT: GDScript = preload("res://scripts/blood_spray.gd")
 @export var spit_max_range: float = 16.0
 @export var spit_preferred_range: float = 7.5
 
+@export var flank_offset_max: float = 2.4
+@export var attack_tell_pulse_hz: float = 6.0
+
 @onready var mesh_root: Node3D = $MeshRoot
 @onready var attack_area: Area3D = $AttackArea
 @onready var hit_light: OmniLight3D = $MeshRoot/HitLight
@@ -50,15 +53,24 @@ var mesh_rest_y: float = 0.0
 var slow_timer: float = 0.0
 var poison_timer: float = 0.0
 var poison_tick_timer: float = 0.0
+var stagger_timer: float = 0.0
 var attack_state: int = 0
 var windup_timer: float = 0.0
 var windup_target: Node = null
 var windup_tween: Tween
+var tell_elapsed: float = 0.0
 var spit_timer: float = 0.0
+var _lateral_offset: float = 0.0
+var _lateral_ref_target_pos: Vector3 = Vector3.ZERO
+var _has_lateral_ref: bool = false
+const _LATERAL_REFRESH_DIST: float = 5.0
+const _FLANK_CLOSE_DIST: float = 3.0
 var mesh_base_colors: Dictionary[StandardMaterial3D, Color] = {}
 var hit_flash_tween: Tween
 
 signal died(zombie)
+signal hit_taken(hit_type, zombie)
+signal decapitated(zombie)
 
 func apply_wave_scaling(wave_index: int) -> void:
 	var tier: int = max(0, (wave_index - 1) / 3)
@@ -92,6 +104,7 @@ func apply_wave_scaling(wave_index: int) -> void:
 
 func _ready() -> void:
 	add_to_group("zombies")
+	floor_max_angle = deg_to_rad(45.0)
 	_apply_variant_config()
 	health = max_health
 	bob_phase = randf() * TAU
@@ -106,7 +119,11 @@ func _ready() -> void:
 		"leg_r": false,
 	}
 	_prepare_hit_flash_materials()
+	if flank_offset_max > 0.0:
+		_lateral_offset = randf_range(-flank_offset_max, flank_offset_max)
 	_select_target()
+	if randf() < 0.65:
+		AudioManager.play_zombie_groan(global_position)
 
 func _apply_variant_config() -> void:
 	match variant:
@@ -179,6 +196,15 @@ func _physics_process(delta: float) -> void:
 		_apply_remote_state(delta)
 		return
 	_update_status_effects(delta)
+	if stagger_timer > 0.0:
+		stagger_timer = max(0.0, stagger_timer - delta)
+		velocity.x = knockback_velocity.x
+		velocity.z = knockback_velocity.z
+		if not is_on_floor():
+			velocity.y -= 20.0 * delta
+		move_and_slide()
+		knockback_velocity = knockback_velocity.lerp(Vector3.ZERO, min(delta * 6.5, 1.0))
+		return
 	_select_target()
 	if target == null or not is_instance_valid(target) or not target.is_inside_tree():
 		target = null
@@ -199,7 +225,13 @@ func _physics_process(delta: float) -> void:
 				elif dist < spit_preferred_range - 1.5:
 					move_intent = -dir * active_speed * 0.6
 			_:
-				move_intent = dir * active_speed
+				var chase_target := _compute_chase_target(to_target, dist)
+				var to_chase := chase_target - global_position
+				to_chase.y = 0.0
+				if to_chase.length() > 0.05:
+					move_intent = to_chase.normalized() * active_speed
+				else:
+					move_intent = dir * active_speed
 		var look_target := target.global_position
 		look_target.y = global_position.y
 		look_at(look_target, Vector3.UP)
@@ -214,6 +246,26 @@ func _physics_process(delta: float) -> void:
 	if variant == &"spitter":
 		_update_spit_attack(delta, dist)
 
+func _compute_chase_target(to_target: Vector3, distance: float) -> Vector3:
+	if target == null:
+		return global_position
+	if flank_offset_max <= 0.0:
+		return target.global_position
+	# Refresh lateral offset when target moves significantly
+	if not _has_lateral_ref or _lateral_ref_target_pos.distance_to(target.global_position) > _LATERAL_REFRESH_DIST:
+		_lateral_offset = randf_range(-flank_offset_max, flank_offset_max)
+		_lateral_ref_target_pos = target.global_position
+		_has_lateral_ref = true
+	var to_dir := Vector3(to_target.x, 0.0, to_target.z)
+	if to_dir.length_squared() < 0.001:
+		return target.global_position
+	to_dir = to_dir.normalized()
+	var right := Vector3.UP.cross(to_dir)
+	# Near the player (< 3.0m), blend the offset to zero for the final strike
+	var blend: float = clampf(distance / _FLANK_CLOSE_DIST, 0.0, 1.0)
+	var current_offset: float = _lateral_offset * blend
+	return target.global_position + right * current_offset
+
 func _update_attack_state(delta: float) -> void:
 	match attack_state:
 		0:
@@ -224,6 +276,8 @@ func _update_attack_state(delta: float) -> void:
 					_begin_windup(victim)
 		1:
 			windup_timer -= delta
+			tell_elapsed += delta
+			_apply_telegraph_pulse()
 			if windup_target == null or not is_instance_valid(windup_target) or not windup_target.is_inside_tree() or windup_target.dead:
 				_cancel_windup()
 				return
@@ -233,6 +287,9 @@ func _update_attack_state(delta: float) -> void:
 			attack_timer = max(0.0, attack_timer - delta)
 			if attack_timer <= 0.0:
 				attack_state = 0
+
+func is_winding_up() -> bool:
+	return attack_state == 1 and not dying
 
 func _find_attack_target() -> Node:
 	if not is_inside_tree():
@@ -245,7 +302,9 @@ func _find_attack_target() -> Node:
 func _begin_windup(victim: Node) -> void:
 	attack_state = 1
 	windup_timer = attack_windup
+	tell_elapsed = 0.0
 	windup_target = victim
+	AudioManager.play_zombie_windup(global_position)
 	if windup_tween:
 		windup_tween.kill()
 	hit_light.light_color = attack_telegraph_color
@@ -255,6 +314,7 @@ func _begin_windup(victim: Node) -> void:
 	var pop := create_tween()
 	pop.tween_property(mesh_root, "scale", Vector3(0.92, 1.12, 0.92), attack_windup * 0.6)
 	pop.tween_property(mesh_root, "scale", Vector3(1.18, 0.86, 1.18), attack_windup * 0.4)
+	_apply_telegraph_pulse()
 
 func _cancel_windup() -> void:
 	if windup_tween:
@@ -264,8 +324,10 @@ func _cancel_windup() -> void:
 	windup_target = null
 	attack_state = 2
 	attack_timer = attack_cooldown * 0.5
+	_restore_materials_if_not_flashing()
 
 func _resolve_attack() -> void:
+	_restore_materials_if_not_flashing()
 	var still_in_range := false
 	if windup_target != null and is_instance_valid(windup_target) and not windup_target.dead:
 		for body in attack_area.get_overlapping_bodies():
@@ -362,7 +424,8 @@ func take_hit(
 	force: float = 0.0,
 	hit_color: Color = Color(1.0, 0.42, 0.35),
 	hit_effect: StringName = &"",
-	charge: float = 0.0
+	charge: float = 0.0,
+	headshot_mult: float = 0.0
 ) -> void:
 	if dying:
 		return
@@ -373,37 +436,77 @@ func take_hit(
 	var applied_damage := amount
 	match zone_name:
 		"head":
+			AudioManager.play_headshot()
 			if randf() < 0.78:
 				applied_damage = max_health
 			else:
-				applied_damage = max(amount, 2)
+				var base_head_dmg: int = max(amount, 2)
+				applied_damage = maxi(base_head_dmg, int(ceil(float(base_head_dmg) * (1.0 + headshot_mult))))
 			if randf() < 0.85:
 				_sever_head(impulse_direction, force)
 		"arm_l":
+			AudioManager.play_hit()
 			if randf() < 0.68:
 				_sever_arm(true, impulse_direction, force)
 		"arm_r":
+			AudioManager.play_hit()
 			if randf() < 0.68:
 				_sever_arm(false, impulse_direction, force)
 		"leg_l":
+			AudioManager.play_hit()
 			if randf() < 0.74:
 				_sever_leg(true, impulse_direction, force)
 		"leg_r":
+			AudioManager.play_hit()
 			if randf() < 0.74:
 				_sever_leg(false, impulse_direction, force)
 		_:
+			AudioManager.play_hit()
 			if randf() < 0.35:
 				_sever_random_part(impulse_direction, force)
 	if impulse_direction.length() > 0.01 and force > 0.0:
 		apply_impulse(impulse_direction, force)
+	# High force/damage, charged shot, or melee kick causes stagger
+	var is_high_impact: bool = force >= 5.0 or applied_damage >= 2 or charge >= 0.5 or hit_effect == &"knockback"
+	if is_high_impact and health > 0:
+		var stagger_dur: float = clampf(0.35 + force * 0.04 + float(applied_damage) * 0.08 + charge * 0.2, 0.4, 1.2)
+		var back_dir: Vector3 = impulse_direction
+		if back_dir.length_squared() < 0.01 and target != null:
+			back_dir = (global_position - target.global_position).normalized()
+		stagger(stagger_dur, back_dir, maxf(force, 3.5))
 	health -= applied_damage
 	if health <= 0:
+		hit_taken.emit("kill", self)
 		_die()
 	else:
+		if zone_name == "head":
+			hit_taken.emit("head", self)
+		elif zone_name in ["leg_l", "leg_r"] or crawl_mode:
+			hit_taken.emit("leg", self)
+		else:
+			hit_taken.emit("body", self)
 		_flash_hit_light(hit_flash_energy, hit_color, 0.18)
 		var t := create_tween()
 		t.tween_property(mesh_root, "scale", Vector3(1.2, 0.8, 1.2), 0.05)
 		t.tween_property(mesh_root, "scale", Vector3.ONE, 0.12)
+
+func stagger(duration: float, impulse_dir: Vector3 = Vector3.ZERO, impulse_force: float = 0.0) -> void:
+	if dying:
+		return
+	stagger_timer = maxf(stagger_timer, duration)
+	# Interrupt attack if winding up
+	if attack_state == 1:
+		_cancel_windup()
+	# Prevent attacking for duration
+	attack_timer = maxf(attack_timer, duration)
+	attack_state = 2
+	# Apply backward impulse
+	if impulse_dir.length_squared() > 0.01 and impulse_force > 0.0:
+		apply_impulse(impulse_dir, impulse_force)
+	elif impulse_force > 0.0 and target != null:
+		var away := (global_position - target.global_position).normalized()
+		away.y = 0.0
+		apply_impulse(away, impulse_force)
 
 func _apply_hit_effect(hit_direction: Vector3, hit_effect: StringName, charge: float) -> void:
 	match hit_effect:
@@ -453,12 +556,36 @@ func _flash_hit(hit_color: Color) -> void:
 		material.emission_energy_multiplier = 1.8
 	hit_flash_tween = create_tween()
 	hit_flash_tween.tween_interval(0.08)
-	hit_flash_tween.tween_callback(_restore_hit_flash_materials)
+	hit_flash_tween.tween_callback(_on_hit_flash_finished)
+
+func _on_hit_flash_finished() -> void:
+	hit_flash_tween = null
+	if attack_state == 1 and not dying:
+		_apply_telegraph_pulse()
+	else:
+		_restore_hit_flash_materials()
 
 func _restore_hit_flash_materials() -> void:
 	for material in mesh_base_colors:
 		material.albedo_color = mesh_base_colors[material]
 		material.emission_enabled = false
+
+func _restore_materials_if_not_flashing() -> void:
+	if hit_flash_tween == null:
+		_restore_hit_flash_materials()
+
+func _apply_telegraph_pulse() -> void:
+	if hit_flash_tween != null:
+		return
+	var pulse: float = 0.5 + 0.5 * sin(tell_elapsed * attack_tell_pulse_hz * TAU)
+	hit_light.light_color = attack_telegraph_color
+	hit_light.light_energy = 1.2 + 1.6 * pulse
+	for material in mesh_base_colors:
+		var orig: Color = mesh_base_colors[material]
+		material.albedo_color = orig.lerp(attack_telegraph_color, 0.45 * pulse)
+		material.emission_enabled = true
+		material.emission = attack_telegraph_color
+		material.emission_energy_multiplier = 0.8 * pulse
 
 func _spawn_blood_spray(zone_name: String, impulse_direction: Vector3) -> void:
 	var root := get_tree().current_scene
@@ -524,6 +651,12 @@ func play_remote_death() -> void:
 	if dying:
 		return
 	dying = true
+	set_collision_layer_value(3, false)
+	set_collision_mask_value(2, false)
+	_disable_all_hitboxes()
+	if attack_area:
+		attack_area.set_deferred("monitoring", false)
+		attack_area.set_deferred("monitorable", false)
 	_flash_hit_light(3.8, Color(1.0, 0.8, 0.45), 0.34)
 	var t := create_tween()
 	t.set_parallel(true)
@@ -537,6 +670,10 @@ func _die() -> void:
 	set_collision_layer_value(3, false)
 	set_collision_mask_value(2, false)
 	_disable_all_hitboxes()
+	if attack_area:
+		attack_area.set_deferred("monitoring", false)
+		attack_area.set_deferred("monitorable", false)
+	AudioManager.play_kill()
 	died.emit(self)
 	_flash_hit_light(3.8, Color(1.0, 0.8, 0.45), 0.34)
 	if variant == &"exploder":
@@ -615,11 +752,16 @@ func _sever_head(direction: Vector3, force: float) -> void:
 	if severed_parts["head"]:
 		return
 	severed_parts["head"] = true
-	head_hitbox.monitoring = false
+	head_hitbox.set_deferred("monitoring", false)
+	head_hitbox.set_deferred("monitorable", false)
 	_spawn_detached_piece(head_mesh, direction, force + 2.5, 0.9)
 	_spawn_detached_piece(jaw_mesh, direction, force + 1.0, 0.6)
 	head_mesh.visible = false
 	jaw_mesh.visible = false
+	decapitated.emit(self)
+	for player in get_tree().get_nodes_in_group("player"):
+		if is_instance_valid(player) and player.has_method("on_zombie_decapitated"):
+			player.on_zombie_decapitated()
 
 func _sever_arm(is_left: bool, direction: Vector3, force: float) -> void:
 	var key := "arm_l" if is_left else "arm_r"
@@ -629,7 +771,8 @@ func _sever_arm(is_left: bool, direction: Vector3, force: float) -> void:
 	var mesh := arm_l_mesh if is_left else arm_r_mesh
 	var shoulder := shoulder_l_mesh if is_left else shoulder_r_mesh
 	var hitbox := arm_l_hitbox if is_left else arm_r_hitbox
-	hitbox.monitoring = false
+	hitbox.set_deferred("monitoring", false)
+	hitbox.set_deferred("monitorable", false)
 	_spawn_detached_piece(mesh, direction, force + 1.8, 0.55)
 	mesh.visible = false
 	shoulder.visible = false
@@ -641,7 +784,8 @@ func _sever_leg(is_left: bool, direction: Vector3, force: float) -> void:
 	severed_parts[key] = true
 	var mesh := leg_l_mesh if is_left else leg_r_mesh
 	var hitbox := leg_l_hitbox if is_left else leg_r_hitbox
-	hitbox.monitoring = false
+	hitbox.set_deferred("monitoring", false)
+	hitbox.set_deferred("monitorable", false)
 	_spawn_detached_piece(mesh, direction, force + 1.5, 0.7)
 	mesh.visible = false
 	if not crawl_mode:
@@ -664,6 +808,10 @@ func _spawn_detached_piece(mesh: MeshInstance3D, direction: Vector3, force: floa
 	gib.collision_layer = 16
 	gib.collision_mask = 1
 	gib.continuous_cd = true
+	gib.add_collision_exception_with(self)
+	for player_node in get_tree().get_nodes_in_group("player"):
+		if player_node is CollisionObject3D:
+			gib.add_collision_exception_with(player_node)
 	var visual := MeshInstance3D.new()
 	visual.mesh = mesh.mesh
 	visual.material_override = mesh.material_override
@@ -692,4 +840,5 @@ func _spawn_detached_piece(mesh: MeshInstance3D, direction: Vector3, force: floa
 
 func _disable_all_hitboxes() -> void:
 	for hitbox in [head_hitbox, arm_l_hitbox, arm_r_hitbox, leg_l_hitbox, leg_r_hitbox]:
-		hitbox.monitoring = false
+		hitbox.set_deferred("monitoring", false)
+		hitbox.set_deferred("monitorable", false)

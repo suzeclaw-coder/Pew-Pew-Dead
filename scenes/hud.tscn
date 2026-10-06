@@ -1,7 +1,9 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/hud.gd" id="1_h"]
 [ext_resource type="Script" path="res://scripts/card_picker.gd" id="2_card"]
+[ext_resource type="Script" path="res://scripts/crosshair.gd" id="3_cross"]
+[ext_resource type="Script" path="res://scripts/threat_indicator.gd" id="4_threat"]
 
 [node name="HUD" type="CanvasLayer"]
 script = ExtResource("1_h")
@@ -62,25 +64,24 @@ theme_override_colors/font_outline_color = Color(1, 1, 1, 1)
 theme_override_constants/outline_size = 4
 theme_override_font_sizes/font_size = 20
 
-[node name="Crosshair" type="Label" parent="."]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -16.0
-offset_top = -20.0
-offset_right = 16.0
-offset_bottom = 20.0
+[node name="Crosshair" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
-text = "+"
-theme_override_colors/font_color = Color(1, 1, 1, 1)
-theme_override_colors/font_outline_color = Color(0.1, 0.1, 0.15, 1)
-theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 28
-horizontal_alignment = 1
-vertical_alignment = 1
+mouse_filter = 2
+script = ExtResource("3_cross")
+
+[node name="ThreatIndicator" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_threat")
+
 
 [node name="CenterMessage" type="Label" parent="."]
 anchors_preset = 8

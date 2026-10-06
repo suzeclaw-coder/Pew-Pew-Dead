@@ -46,10 +46,12 @@ var projectile_speed_bonus: float = 0.0
 var projectile_pierce_bonus: int = 0
 var projectile_bounce_bonus: int = 0
 var lifesteal_per_kill: int = 0
+var headshot_bonus: float = 0.0
 var current_weapon: int = 0
 var auto_firing: bool = false
 var auto_fire_timer: float = 0.0
 var shotgun_cooldown_timer: float = 0.0
+var executioner_timer: float = 0.0
 
 const WEAPON_NAMES: Array[String] = ["Pistol", "Rifle", "Shotgun"]
 
@@ -101,9 +103,15 @@ var stamina_regen_timer: float = 0.0
 signal health_changed(value: int, max_value: int)
 signal stamina_changed(value: float, max_value: float)
 signal died
+signal hit_confirmed(hit_type: String)
 
 func _ready() -> void:
 	add_to_group("player")
+	floor_max_angle = deg_to_rad(46.0)
+	floor_snap_length = 0.2
+	floor_stop_on_slope = true
+	floor_constant_speed = true
+	floor_block_on_wall = true
 	health = max_health
 	stamina = stamina_max
 	muzzle_flash.material_override = muzzle_flash.material_override.duplicate()
@@ -205,6 +213,7 @@ func _run_local_movement(delta: float) -> void:
 		jump_buffer_timer = 0.0
 		coyote_timer = 0.0
 		jumped_this_frame = true
+		AudioManager.play_jump()
 
 	var input_dir := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var forward := -head.global_transform.basis.z
@@ -221,7 +230,12 @@ func _run_local_movement(delta: float) -> void:
 		sprinting = false
 	else:
 		sprinting = on_floor and Input.is_action_pressed("sprint") and direction.length() > 0.0
-		var target_speed := move_speed * (sprint_multiplier if sprinting else 1.0)
+		var current_move_speed := move_speed
+		if executioner_timer > 0.0:
+			current_move_speed *= 1.40
+		if SynergyManager and SynergyManager.has_synergy(&"adrenaline_rush") and float(health) / float(max(1, max_health)) < 0.30:
+			current_move_speed *= 1.25
+		var target_speed := current_move_speed * (sprint_multiplier if sprinting else 1.0)
 		var horiz_velocity := Vector3(velocity.x, 0.0, velocity.z)
 		if on_floor and not jumped_this_frame:
 			horiz_velocity = horiz_velocity.move_toward(Vector3.ZERO, ground_friction * delta)
@@ -244,7 +258,29 @@ func _run_local_movement(delta: float) -> void:
 		velocity.x = horiz_velocity.x
 		velocity.z = horiz_velocity.z
 
+	var pre_slide_vy := velocity.y
 	move_and_slide()
+	if is_on_ceiling() and velocity.y > 0.0:
+		velocity.y = 0.0
+	if not jumped_this_frame and not is_on_floor() and velocity.y > jump_velocity:
+		velocity.y = minf(velocity.y, jump_velocity)
+	if not jumped_this_frame and velocity.y > 0.0:
+		for idx in range(get_slide_collision_count()):
+			var collision := get_slide_collision(idx)
+			if collision == null:
+				continue
+			var collider := collision.get_collider()
+			if collider == null:
+				continue
+			var is_enemy: bool = collider.is_in_group("zombies") or (collider.get_parent() != null and collider.get_parent().is_in_group("zombies"))
+			var is_non_env: bool = false
+			if collider is CollisionObject3D:
+				is_non_env = (collider.collision_layer & 1) == 0 or (collider.collision_layer & ~1) != 0
+			if is_enemy or is_non_env:
+				var normal := collision.get_normal()
+				if normal.y > 0.01 or velocity.y > pre_slide_vy:
+					velocity.y = minf(velocity.y, maxf(0.0, pre_slide_vy))
+					break
 	if slide_timer > 0.0:
 		_process_slide_collisions()
 	_update_view_juice(delta)
@@ -273,7 +309,8 @@ func _start_charging_shot() -> void:
 	muzzle_flash.visible = true
 
 func _update_charge(delta: float) -> void:
-	charge_time = min(charge_time + delta, max_charge_time)
+	var charge_speed: float = 1.6 if executioner_timer > 0.0 else 1.0
+	charge_time = min(charge_time + delta * charge_speed, max_charge_time)
 	var charge_level := charge_time / max_charge_time
 	var pulse := 1.0 + charge_level * 1.1 + sin(Time.get_ticks_msec() * 0.025) * 0.08
 	muzzle_flash.scale = Vector3.ONE * pulse
@@ -284,6 +321,7 @@ func _shoot(charge_level: float) -> void:
 	var element = PROJECTILE_ELEMENTS[projectile_index % PROJECTILE_ELEMENTS.size()]
 	var shot_color: Color = element.color
 	_play_shot_feedback(shot_color, charge_level)
+	AudioManager.play_shot("pistol")
 	if projectile_scene == null:
 		push_warning("Player cannot shoot because no projectile scene is assigned.")
 		return
@@ -307,6 +345,10 @@ func _spawn_projectile(direction: Vector3, charge_level: float, damage_mult: flo
 		projectile.pierces_remaining += projectile_pierce_bonus
 	if "bounces_remaining" in projectile:
 		projectile.bounces_remaining += projectile_bounce_bonus
+	if "shooter" in projectile:
+		projectile.shooter = self
+	if headshot_bonus > 0.0 and "headshot_bonus" in projectile:
+		projectile.headshot_bonus = headshot_bonus
 	projectile.launch(muzzle_flash.global_position, direction)
 	return projectile
 
@@ -330,12 +372,14 @@ func _tick_auto_fire(delta: float) -> void:
 	auto_fire_timer = max(0.0, auto_fire_timer - delta)
 	if auto_fire_timer > 0.0:
 		return
-	auto_fire_timer = 1.0 / max(0.1, weapon_rifle_rpm)
+	var effective_rpm: float = weapon_rifle_rpm * (1.6 if executioner_timer > 0.0 else 1.0)
+	auto_fire_timer = 1.0 / max(0.1, effective_rpm)
 	_fire_rifle_round()
 
 func _fire_rifle_round() -> void:
 	var element = PROJECTILE_ELEMENTS[projectile_index % PROJECTILE_ELEMENTS.size()]
 	_play_shot_feedback(element.color, 0.18)
+	AudioManager.play_shot("rifle")
 	var basis := camera.global_transform.basis
 	var dir: Vector3 = -basis.z.normalized()
 	var spread_rad := deg_to_rad(weapon_rifle_spread_deg)
@@ -347,9 +391,11 @@ func _fire_rifle_round() -> void:
 func _fire_shotgun() -> void:
 	if shotgun_cooldown_timer > 0.0:
 		return
-	shotgun_cooldown_timer = weapon_shotgun_cooldown
+	var cd: float = weapon_shotgun_cooldown * (0.6 if executioner_timer > 0.0 else 1.0)
+	shotgun_cooldown_timer = cd
 	var element = PROJECTILE_ELEMENTS[projectile_index % PROJECTILE_ELEMENTS.size()]
 	_play_shot_feedback(element.color, 0.5)
+	AudioManager.play_shot("shotgun")
 	var basis := camera.global_transform.basis
 	var spread_rad := deg_to_rad(weapon_shotgun_spread_deg)
 	for i in weapon_shotgun_pellets:
@@ -384,6 +430,7 @@ func _try_melee_attack() -> void:
 		return
 	melee_timer = melee_cooldown
 	_play_melee_feedback()
+	AudioManager.play_melee()
 	var best_target: Node = null
 	var best_zone := "torso"
 	var best_distance: float = INF
@@ -402,9 +449,19 @@ func _try_melee_attack() -> void:
 			best_distance = distance
 			best_target = zombie
 			best_zone = "torso"
-	if best_target == null:
-		return
-	_apply_zombie_hit(best_target, best_zone, 1, forward, melee_force)
+	if SynergyManager and SynergyManager.has_synergy(&"grave_kick"):
+		# Grave Kick - AOE shockwave knocking down all nearby zombies
+		var shockwave_radius: float = 6.0
+		for zombie in get_tree().get_nodes_in_group("zombies"):
+			if not is_instance_valid(zombie) or zombie.dying:
+				continue
+			var to_z: Vector3 = zombie.global_position - global_position
+			var d: float = to_z.length()
+			if d <= shockwave_radius and d > 0.01:
+				var push_dir: Vector3 = (to_z.normalized() + Vector3.UP * 0.4).normalized()
+				_apply_zombie_hit(zombie, "torso", 2, push_dir, melee_force * 2.2 + 8.0)
+	elif best_target != null:
+		_apply_zombie_hit(best_target, best_zone, 1, forward, melee_force)
 
 func _extract_hit_data(collider: Object) -> Dictionary:
 	if collider == null:
@@ -419,6 +476,9 @@ func _extract_hit_data(collider: Object) -> Dictionary:
 		return {"zombie": collider.get_parent(), "zone": "torso", "amount": 1}
 	return {}
 
+func notify_hit_confirmed(hit_type: String) -> void:
+	hit_confirmed.emit(hit_type)
+
 func _apply_zombie_hit(zombie: Node, zone_name: String, amount: int, impulse_direction: Vector3, force: float) -> void:
 	if zombie == null:
 		return
@@ -430,6 +490,15 @@ func _apply_zombie_hit(zombie: Node, zone_name: String, amount: int, impulse_dir
 		var root := get_tree().current_scene
 		if root and root.has_method("request_zombie_hit"):
 			root.request_zombie_hit.rpc_id(1, zombie.network_id, zone_name, amount, impulse_direction, force)
+	
+	var hit_type := "body"
+	if ("health" in zombie and zombie.health <= 0) or ("dying" in zombie and zombie.dying):
+		hit_type = "kill"
+	elif zone_name == "head":
+		hit_type = "head"
+	elif zone_name in ["leg_l", "leg_r"] or ("crawl_mode" in zombie and zombie.crawl_mode):
+		hit_type = "leg"
+	notify_hit_confirmed(hit_type)
 
 func _process_slide_collisions() -> void:
 	for idx in range(get_slide_collision_count()):
@@ -441,7 +510,12 @@ func _process_slide_collisions() -> void:
 			var direction := Vector3(velocity.x, 0.0, velocity.z).normalized()
 			if direction.length() <= 0.01:
 				direction = -head.global_transform.basis.z
-			_apply_zombie_hit(collider, "torso", 1, direction, melee_force + 2.5)
+			var is_crawler: bool = bool(collider.get("crawl_mode"))
+			if is_crawler and SynergyManager and SynergyManager.has_synergy(&"bowling_ball"):
+				var lethal_dmg: int = collider.max_health if "max_health" in collider else 999
+				_apply_zombie_hit(collider, "torso", lethal_dmg, direction + Vector3.UP * 0.5, melee_force * 3.5 + 15.0)
+			else:
+				_apply_zombie_hit(collider, "torso", 1, direction, melee_force + 2.5)
 
 func _play_shot_feedback(shot_color: Color, charge_level: float) -> void:
 	if recoil_tween:
@@ -499,6 +573,13 @@ func apply_lifesteal_tick() -> void:
 	health = mini(max_health, health + lifesteal_per_kill)
 	health_changed.emit(health, max_health)
 
+func on_zombie_decapitated() -> void:
+	if dead:
+		return
+	if SynergyManager and SynergyManager.has_synergy(&"executioner"):
+		executioner_timer = 3.0
+		AudioManager.play_headshot()
+
 func apply_pickup(drop_type: StringName) -> void:
 	if dead:
 		return
@@ -548,8 +629,12 @@ func take_damage(amount: int) -> void:
 		_apply_damage(amount)
 
 func _apply_damage(amount: int) -> void:
-	health = max(0, health - amount)
+	var final_amount: int = amount
+	if SynergyManager and SynergyManager.has_synergy(&"adrenaline_rush") and float(health) / float(max(1, max_health)) < 0.30:
+		final_amount = maxi(1, int(round(float(amount) * 0.65))) # 35% damage reduction
+	health = max(0, health - final_amount)
 	health_changed.emit(health, max_health)
+	AudioManager.play_player_hurt()
 	if health <= 0 and not dead:
 		dead = true
 		_release_mouse()
@@ -610,6 +695,12 @@ func _update_local_visual_mode() -> void:
 	avatar_root.visible = not local
 	head_mesh.visible = not local
 
+func is_sprinting() -> bool:
+	return sprinting
+
+func is_sliding() -> bool:
+	return slide_timer > 0.0
+
 func _can_start_slide() -> bool:
 	if slide_timer > 0.0 or not is_on_floor():
 		return false
@@ -625,6 +716,7 @@ func _start_slide() -> void:
 	var speed_ratio: float = clampf(move_flat.length() / (move_speed * sprint_multiplier), 0.75, 1.25)
 	slide_timer = slide_duration * speed_ratio
 	sprinting = false
+	AudioManager.play_slide()
 
 func _update_view_juice(delta: float) -> void:
 	var target_fov := sprint_fov if sprinting else base_fov

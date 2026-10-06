@@ -93,6 +93,27 @@ func _build_card_panel(card_data: Dictionary, index: int) -> Button:
 	btn.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	btn.pressed.connect(_on_card_pressed.bind(index))
+	# Check if picking this card would complete a synergy
+	var synergy_hint := ""
+	if SynergyManager:
+		var card_id: StringName = card_data.get("id", &"")
+		for s in SynergyManager.SYNERGIES:
+			if not s.cards.has(card_id):
+				continue
+			var owned_count := 0
+			for req in s.cards:
+				if SynergyManager.owned_cards.has(req):
+					owned_count += 1
+			if s.cards.size() - owned_count == 1:
+				synergy_hint = "⚡ UNLOCKS: %s" % s.name
+				break
+	if synergy_hint != "":
+		btn.text += "\n\n" + synergy_hint
+		sb_normal.border_color = Color(1.0, 0.85, 0.1)
+		sb_normal.border_width_left = 6
+		sb_normal.border_width_right = 6
+		sb_normal.border_width_top = 6
+		sb_normal.border_width_bottom = 6
 	return btn
 
 func _rarity_label(rarity: int) -> String:
@@ -123,5 +144,7 @@ func _pick_index(index: int) -> void:
 		if child is Button:
 			child.disabled = true
 	var pick_id: StringName = current_offer[index]
+	if SynergyManager:
+		SynergyManager.register_card(pick_id)
 	status.text = "Picked %s. Waiting..." % CardLibrary.get_card(pick_id).get("name", "?")
 	card_picked.emit(pick_id)

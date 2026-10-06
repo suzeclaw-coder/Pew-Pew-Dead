@@ -31,6 +31,7 @@ var card_phase_wave: int = 0
 var pending_card_offers: Dictionary = {}
 var pending_card_picks: Dictionary = {}
 var local_card_offer: Array = []
+var _picked_cards: Array[StringName] = []
 
 func _ready() -> void:
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -134,8 +135,11 @@ func _reset_session_state() -> void:
 	pending_card_offers.clear()
 	pending_card_picks.clear()
 	local_card_offer.clear()
+	_picked_cards.clear()
 	if hud:
 		hud.hide_card_picker()
+	if SynergyManager:
+		SynergyManager.reset()
 	wave_manager.reset_waves()
 	if multiplayer.has_multiplayer_peer():
 		multiplayer.multiplayer_peer.close()
@@ -183,6 +187,8 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		player.stamina_changed.connect(hud.set_stamina)
 		player.weapon_changed.connect(hud.set_weapon)
 		player.died.connect(_on_local_player_died)
+		if player.has_signal("hit_confirmed") and hud.has_method("show_hitmarker"):
+			player.hit_confirmed.connect(hud.show_hitmarker)
 		hud.set_health(player.max_health, player.max_health)
 		hud.set_stamina(player.stamina_max, player.stamina_max)
 		hud.set_weapon(player.current_weapon, player.WEAPON_NAMES[player.current_weapon])
@@ -367,8 +373,48 @@ func sync_kills(value: int) -> void:
 @rpc("authority", "call_local", "reliable")
 func show_win_state() -> void:
 	hud.show_win()
-	await get_tree().create_timer(5.0).timeout
-	get_tree().reload_current_scene()
+	await get_tree().create_timer(4.0).timeout
+	_restart_session()
+
+func _restart_session() -> void:
+	session_started = false
+	next_zombie_id = 1
+	next_drop_id = 1
+	alive_players = 0
+	current_wave_number = 0
+	current_wave_total = 0
+	total_kills = 0
+	player_spawn_map.clear()
+	for peer_id in player_nodes.keys():
+		var player: Node = player_nodes[peer_id]
+		if is_instance_valid(player):
+			player.queue_free()
+	player_nodes.clear()
+	zombie_nodes.clear()
+	for child in zombies_root.get_children():
+		child.queue_free()
+	for did in drop_nodes.keys():
+		var d: Node = drop_nodes[did]
+		if is_instance_valid(d):
+			d.queue_free()
+	drop_nodes.clear()
+	card_phase_active = false
+	pending_card_offers.clear()
+	pending_card_picks.clear()
+	local_card_offer.clear()
+	_picked_cards.clear()
+	hud.hide_card_picker()
+	if SynergyManager:
+		SynergyManager.reset()
+	wave_manager.reset_waves()
+	hud.reset_for_session()
+	hud.flash_message("PLAY AGAIN", 2.0)
+	print("[Main] Session restarted without menu.")
+	if _is_server_authority():
+		_spawn_player_for_peer(_local_peer_id())
+		alive_players = 1
+		session_started = true
+		wave_manager.start_waves()
 
 @rpc("authority", "call_local", "reliable")
 func show_lose_state() -> void:
@@ -479,11 +525,26 @@ func end_card_phase() -> void:
 	hud.hide_card_picker()
 	_capture_local_menu_control()
 
-func _on_drop_requested(_wave_index: int) -> void:
+func _on_drop_requested(wave_index: int) -> void:
 	if not _is_server_authority():
 		return
 	var pos: Vector3 = _pick_drop_position()
-	var drop_type: StringName = DROP_TYPES.pick_random()
+	var drop_type: StringName
+	if wave_index == 1:
+		drop_type = &"heal"
+	else:
+		var low_hp := false
+		var local_id := _local_peer_id()
+		for p in get_tree().get_nodes_in_group("player"):
+			if p.get("owning_peer_id") == local_id and is_instance_valid(p):
+				var mh: int = p.get("max_health") if p.get("max_health") else 1
+				if float(p.get("health")) / float(mh) < 0.40:
+					low_hp = true
+					break
+		if low_hp and randf() < 0.70:
+			drop_type = &"heal"
+		else:
+			drop_type = DROP_TYPES.pick_random()
 	var drop_id: int = next_drop_id
 	next_drop_id += 1
 	if multiplayer.has_multiplayer_peer():

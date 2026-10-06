@@ -16,7 +16,8 @@ extends CanvasLayer
 @onready var console_log: RichTextLabel = $ConsolePanel/Margin/VBox/Log
 @onready var console_input: LineEdit = $ConsolePanel/Margin/VBox/Command
 @onready var gameplay_hud: MarginContainer = $Margin
-@onready var crosshair: Label = $Crosshair
+@onready var crosshair: Control = $Crosshair
+@onready var threat_indicator: Control = $ThreatIndicator
 
 var kills: int = 0
 var last_frame_ms: float = 0.0
@@ -36,9 +37,20 @@ func _ready() -> void:
 	add_console_line("Console ready. Type 'help' for commands.")
 	_update_perf_labels()
 	gameplay_hud.visible = not menu_panel.visible
-	crosshair.visible = not menu_panel.visible
+	if crosshair:
+		crosshair.visible = not menu_panel.visible
+	if threat_indicator:
+		threat_indicator.visible = not menu_panel.visible
 	if card_picker and card_picker.has_signal("card_picked"):
 		card_picker.card_picked.connect(_on_card_picked)
+	if SynergyManager and SynergyManager.has_signal("synergy_activated"):
+		SynergyManager.synergy_activated.connect(_on_synergy_activated)
+
+func _on_synergy_activated(synergy: Dictionary) -> void:
+	var name_str: String = synergy.get("name", "Synergy")
+	var desc_str: String = synergy.get("desc", "")
+	flash_message("⚡ SYNERGY UNLOCKED: %s ⚡\n%s" % [name_str.to_upper(), desc_str], 3.5)
+	add_console_line("★ [Synergy] Activated: %s - %s" % [name_str, desc_str])
 
 func _on_card_picked(card_id: StringName) -> void:
 	card_picked.emit(card_id)
@@ -61,15 +73,51 @@ func mark_card_picker_waiting(message: String) -> void:
 func is_card_picker_visible() -> bool:
 	return card_picker != null and card_picker.visible
 
+var _current_weapon_idx: int = 0
+var _current_weapon_name: String = "Pistol"
+var _cached_element_name: StringName = &""
+var _tracked_player: Node = null
+
 func _process(delta: float) -> void:
 	last_frame_ms = delta * 1000.0
 	_update_perf_labels()
+	_update_element_indicator()
+
+func _update_element_indicator() -> void:
+	if _tracked_player == null or not is_instance_valid(_tracked_player):
+		for p in get_tree().get_nodes_in_group("player"):
+			if is_instance_valid(p):
+				if p.has_method("_is_locally_controlled") and p._is_locally_controlled():
+					_tracked_player = p
+					break
+				elif not p.has_method("_is_locally_controlled"):
+					_tracked_player = p
+					break
+	if _tracked_player == null:
+		return
+	if "projectile_index" in _tracked_player and "PROJECTILE_ELEMENTS" in _tracked_player:
+		var elems: Array = _tracked_player.PROJECTILE_ELEMENTS
+		var idx: int = _tracked_player.projectile_index
+		if not elems.is_empty():
+			var cur_elem: Dictionary = elems[idx % elems.size()]
+			var elem_name: StringName = cur_elem.get("name", &"")
+			if elem_name != _cached_element_name:
+				_cached_element_name = elem_name
+				_refresh_weapon_label()
+
+func _refresh_weapon_label() -> void:
+	if _cached_element_name != &"":
+		weapon_label.text = "WPN [%d] %s  |  %s" % [_current_weapon_idx + 1, _current_weapon_name, _cached_element_name.to_upper()]
+	else:
+		weapon_label.text = "WPN [%d] %s" % [_current_weapon_idx + 1, _current_weapon_name]
 
 func reset_for_session() -> void:
 	kills = 0
 	kills_label.text = "Kills 0"
 	center_label.text = ""
 	center_label.modulate.a = 0.0
+	_cached_element_name = &""
+	_tracked_player = null
 	add_console_line("Session reset.")
 
 func set_health(value: int, max_value: int) -> void:
@@ -79,7 +127,9 @@ func set_stamina(value: float, max_value: float) -> void:
 	stamina_label.text = "STAM %d / %d" % [int(round(value)), int(round(max_value))]
 
 func set_weapon(index: int, weapon_name: String) -> void:
-	weapon_label.text = "WPN [%d] %s" % [index + 1, weapon_name]
+	_current_weapon_idx = index
+	_current_weapon_name = weapon_name
+	_refresh_weapon_label()
 
 func set_wave(wave: int, total: int) -> void:
 	wave_label.text = "Wave %d  (%d zombies)" % [wave, total]
@@ -116,7 +166,14 @@ func show_lose() -> void:
 func show_menu(visible_state: bool) -> void:
 	menu_panel.visible = visible_state
 	gameplay_hud.visible = not visible_state
-	crosshair.visible = not visible_state
+	if crosshair:
+		crosshair.visible = not visible_state
+	if threat_indicator:
+		threat_indicator.visible = not visible_state
+
+func show_hitmarker(hit_type: String = "body") -> void:
+	if crosshair and crosshair.has_method("flash_hit"):
+		crosshair.flash_hit(hit_type)
 
 func is_menu_visible() -> bool:
 	return menu_panel.visible

@@ -12,6 +12,7 @@ extends Node
 @export var drop_chance_per_wave: float = 0.55
 @export var drop_chance_growth: float = 0.06
 @export var drop_chance_max: float = 0.95
+@export var max_waves: int = 10
 
 var current_wave: int = 0
 var alive_count: int = 0
@@ -27,6 +28,7 @@ signal all_waves_complete
 signal drop_requested(wave_index: int)
 signal card_phase_requested(wave_index: int)
 signal card_phase_done
+signal boss_spawned(wave_index: int)
 
 func start_waves() -> void:
 	if running:
@@ -56,6 +58,9 @@ func _start_next_wave() -> void:
 	var boss_wave: bool = wave_index >= 5 and wave_index % 5 == 0
 	if boss_wave:
 		_spawn_boss(wave_index)
+		boss_spawned.emit(wave_index)
+		print("[WaveManager] Boss spawned on wave %d" % wave_index)
+		await get_tree().create_timer(2.0).timeout
 	var interval: float = maxf(spawn_interval_min, spawn_interval - spawn_interval_decay * float(wave_index - 1))
 	while running and spawned_count < to_spawn:
 		_spawn_one(wave_index)
@@ -139,12 +144,19 @@ func _on_zombie_died(zombie) -> void:
 	zombie_killed.emit(alive_count)
 	var root := get_parent()
 	if root.has_method("despawn_zombie") and zombie.network_id > 0:
-		root.despawn_zombie.rpc(zombie.network_id)
+		if multiplayer.has_multiplayer_peer():
+			root.despawn_zombie.rpc(zombie.network_id)
+		else:
+			root.despawn_zombie(zombie.network_id)
 	if alive_count <= 0 and not spawning:
 		_advance_wave()
 
 func _advance_wave() -> void:
 	current_wave += 1
+	if current_wave >= max_waves:
+		all_waves_complete.emit()
+		running = false
+		return
 	var chance: float = minf(drop_chance_max, drop_chance_per_wave + drop_chance_growth * float(current_wave - 1))
 	if randf() < chance:
 		drop_requested.emit(current_wave)

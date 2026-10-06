@@ -15,14 +15,14 @@ const CARDS: Array[Dictionary] = [
 	{
 		"id": &"quick_boots",
 		"name": "Quick Boots",
-		"desc": "Move speed +18%. Bhop ceiling rises with it.",
+		"desc": "Move speed +18%. Bhop ceiling rises with it. [Synergy: Bowling Ball]",
 		"color": Color(0.4, 0.9, 1.0),
 		"rarity": RARITY_COMMON,
 	},
 	{
 		"id": &"iron_skin",
 		"name": "Iron Skin",
-		"desc": "+30 max HP and heal +30.",
+		"desc": "+30 max HP and heal +30. [Synergy: Grave Kick]",
 		"color": Color(1.0, 0.7, 0.3),
 		"rarity": RARITY_COMMON,
 	},
@@ -36,15 +36,29 @@ const CARDS: Array[Dictionary] = [
 	{
 		"id": &"hot_loads",
 		"name": "Hot Loads",
-		"desc": "+1 damage on every shot.",
+		"desc": "+1 damage on every shot. [Synergy: Bowling Ball]",
 		"color": Color(0.85, 0.5, 1.0),
 		"rarity": RARITY_COMMON,
 	},
 	{
 		"id": &"glass_cannon",
 		"name": "Glass Cannon",
-		"desc": "-25 max HP, +2 damage. High risk, high reward.",
+		"desc": "-25 max HP, +2 damage. High risk, high reward. [Synergy: Adrenaline Rush]",
 		"color": Color(0.9, 0.3, 0.35),
+		"rarity": RARITY_RARE,
+	},
+	{
+		"id": &"fast_hands",
+		"name": "Fast Hands",
+		"desc": "Weapon fire rate and reload speed +25%. [Synergy: Executioner]",
+		"color": Color(0.98, 0.82, 0.35),
+		"rarity": RARITY_RARE,
+	},
+	{
+		"id": &"headshot",
+		"name": "Headshot",
+		"desc": "+1 base damage and headshot damage bonus +50%. [Synergy: Executioner]",
+		"color": Color(1.0, 0.3, 0.25),
 		"rarity": RARITY_RARE,
 	},
 	{
@@ -78,7 +92,7 @@ const CARDS: Array[Dictionary] = [
 	{
 		"id": &"berserker",
 		"name": "Berserker",
-		"desc": "Melee cooldown -35% and melee force +40%.",
+		"desc": "Melee cooldown -35% and melee force +40%. [Synergy: Grave Kick]",
 		"color": Color(0.95, 0.22, 0.55),
 		"rarity": RARITY_RARE,
 	},
@@ -168,12 +182,20 @@ static func get_card(id: StringName) -> Dictionary:
 	return {}
 
 static func random_offer(count: int = 3, exclude: Array = []) -> Array:
+	const WEIGHTS := {0: 6, 1: 3, 2: 1}  # common, rare, legendary
 	var pool: Array = []
 	for c in CARDS:
-		if not exclude.has(c.id):
+		if exclude.has(c.id):
+			continue
+		var w: int = WEIGHTS.get(c.get("rarity", 0), 6)
+		for _i in w:
 			pool.append(c.id)
 	pool.shuffle()
-	return pool.slice(0, mini(count, pool.size()))
+	var result: Array = []
+	for id in pool:
+		if not result.has(id) and result.size() < count:
+			result.append(id)
+	return result
 
 static func apply(player: Node, card_id: StringName) -> void:
 	if player == null:
@@ -198,6 +220,14 @@ static func apply(player: Node, card_id: StringName) -> void:
 			player.health = mini(player.max_health, player.health)
 			player.damage_bonus += 2
 			player.health_changed.emit(player.health, player.max_health)
+		&"fast_hands":
+			player.weapon_rifle_rpm *= 1.25
+			player.max_charge_time *= 0.8
+			player.weapon_shotgun_cooldown *= 0.8
+		&"headshot":
+			player.damage_bonus += 1
+			if "headshot_bonus" in player:
+				player.headshot_bonus += 0.5
 		&"long_wind":
 			player.stamina_max += 50.0
 			player.stamina = player.stamina_max

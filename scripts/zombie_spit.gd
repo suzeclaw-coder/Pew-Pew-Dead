@@ -48,9 +48,12 @@ func _consume(_target: Node) -> void:
 	if consumed:
 		return
 	consumed = true
-	monitoring = false
+	set_deferred("monitoring", false)
+	set_deferred("monitorable", false)
 	if glow_light:
 		glow_light.light_energy = 4.0
 		var t := create_tween()
 		t.tween_property(glow_light, "light_energy", 0.0, 0.18)
-	queue_free()
+		t.tween_callback(queue_free)
+	else:
+		queue_free()
