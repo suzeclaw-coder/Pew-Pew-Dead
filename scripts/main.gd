@@ -597,6 +597,10 @@ func sync_zombie_states(states: Array) -> void:
 				zombie.apply_remote_state(entry["pos"], entry["yaw"])
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F11 or (event.keycode == KEY_ENTER and event.alt_pressed):
+			_toggle_fullscreen()
+			return
 	if event.is_action_pressed("toggle_console"):
 		hud.toggle_console()
 		return
@@ -610,6 +614,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_close_session_menu()
 		else:
 			_open_session_menu()
+
+func _toggle_fullscreen() -> void:
+	var mode := DisplayServer.window_get_mode()
+	if mode == DisplayServer.WINDOW_MODE_FULLSCREEN or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	else:
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 
 func _player_died_on_server() -> void:
 	alive_players = 0
