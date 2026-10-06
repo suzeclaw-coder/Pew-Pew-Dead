@@ -180,7 +180,8 @@ func _physics_process(delta: float) -> void:
 		return
 	_update_status_effects(delta)
 	_select_target()
-	if target == null:
+	if target == null or not is_instance_valid(target) or not target.is_inside_tree():
+		target = null
 		return
 	var active_speed := crawl_speed if crawl_mode else move_speed
 	if slow_timer > 0.0:
@@ -223,7 +224,7 @@ func _update_attack_state(delta: float) -> void:
 					_begin_windup(victim)
 		1:
 			windup_timer -= delta
-			if windup_target == null or not is_instance_valid(windup_target) or windup_target.dead:
+			if windup_target == null or not is_instance_valid(windup_target) or not windup_target.is_inside_tree() or windup_target.dead:
 				_cancel_windup()
 				return
 			if windup_timer <= 0.0:
@@ -234,8 +235,10 @@ func _update_attack_state(delta: float) -> void:
 				attack_state = 0
 
 func _find_attack_target() -> Node:
+	if not is_inside_tree():
+		return null
 	for body in attack_area.get_overlapping_bodies():
-		if body.is_in_group("player") and body.has_method("take_damage") and not body.dead:
+		if is_instance_valid(body) and body.is_inside_tree() and body.is_in_group("player") and body.has_method("take_damage") and not body.dead:
 			return body
 	return null
 
@@ -325,8 +328,10 @@ func _animate_bob(delta: float) -> void:
 func _select_target() -> void:
 	var best_distance := INF
 	target = null
+	if not is_inside_tree():
+		return
 	for player in get_tree().get_nodes_in_group("player"):
-		if player.dead:
+		if not is_instance_valid(player) or not player.is_inside_tree() or player.dead:
 			continue
 		var dist: float = player.global_position.distance_to(global_position)
 		if dist < best_distance:

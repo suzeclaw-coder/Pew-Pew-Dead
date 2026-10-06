@@ -278,8 +278,6 @@ func _on_local_player_died() -> void:
 		hud.show_persistent("YOU DIED - SPECTATING", Color(0.95, 0.35, 0.45))
 	else:
 		hud.show_lose()
-		await get_tree().create_timer(3.0).timeout
-		get_tree().reload_current_scene()
 
 func _on_wave_started(wave_index: int, total: int) -> void:
 	current_wave_number = wave_index
@@ -376,6 +374,8 @@ func show_win_state() -> void:
 func show_lose_state() -> void:
 	hud.show_lose()
 	await get_tree().create_timer(3.0).timeout
+	session_started = false
+	wave_manager.reset_waves()
 	get_tree().reload_current_scene()
 
 func _on_card_phase_requested(wave_index: int) -> void:
