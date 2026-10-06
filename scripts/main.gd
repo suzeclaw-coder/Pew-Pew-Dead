@@ -140,6 +140,8 @@ func _reset_session_state() -> void:
 	if multiplayer.has_multiplayer_peer():
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
+	if has_node("MenuCamera"):
+		$MenuCamera.make_current()
 
 func _prepare_for_new_session() -> void:
 	get_tree().paused = false
@@ -152,10 +154,15 @@ func _open_session_menu() -> void:
 	status_text = "Choose Solo, Host, or Join."
 	hud.set_status(status_text)
 	hud.show_menu(true)
+	if has_node("MenuCamera"):
+		$MenuCamera.make_current()
 
 func _close_session_menu() -> void:
 	get_tree().paused = false
 	hud.show_menu(false)
+	var local_player: Node = player_nodes.get(_local_peer_id(), null)
+	if local_player and is_instance_valid(local_player) and local_player.has_node("Head/Camera3D"):
+		local_player.get_node("Head/Camera3D").make_current()
 	_capture_local_menu_control()
 
 func _spawn_player_for_peer(peer_id: int) -> void:

@@ -15,6 +15,8 @@ extends CanvasLayer
 @onready var console_panel: PanelContainer = $ConsolePanel
 @onready var console_log: RichTextLabel = $ConsolePanel/Margin/VBox/Log
 @onready var console_input: LineEdit = $ConsolePanel/Margin/VBox/Command
+@onready var gameplay_hud: MarginContainer = $Margin
+@onready var crosshair: Label = $Crosshair
 
 var kills: int = 0
 var last_frame_ms: float = 0.0
@@ -33,6 +35,8 @@ func _ready() -> void:
 	console_log.clear()
 	add_console_line("Console ready. Type 'help' for commands.")
 	_update_perf_labels()
+	gameplay_hud.visible = not menu_panel.visible
+	crosshair.visible = not menu_panel.visible
 	if card_picker and card_picker.has_signal("card_picked"):
 		card_picker.card_picked.connect(_on_card_picked)
 
@@ -111,6 +115,8 @@ func show_lose() -> void:
 
 func show_menu(visible_state: bool) -> void:
 	menu_panel.visible = visible_state
+	gameplay_hud.visible = not visible_state
+	crosshair.visible = not visible_state
 
 func is_menu_visible() -> bool:
 	return menu_panel.visible

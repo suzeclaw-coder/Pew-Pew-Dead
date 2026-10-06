@@ -71,6 +71,11 @@ light_color = Color(1, 0.97, 0.92, 1)
 light_energy = 1.2
 shadow_enabled = true
 
+[node name="MenuCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.916157, 0.400819, 0, -0.400819, 0.916157, 0, 8, 16)
+current = true
+fov = 68.0
+
 [node name="World" type="StaticBody3D" parent="."]
 collision_layer = 1
 collision_mask = 0
